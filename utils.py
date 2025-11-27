@@ -35,7 +35,7 @@ def render_header():
                     border:4px solid #d4af37;
                     box-shadow:0 0 12px rgba(0,0,0,0.18);
                 ">
-                    <img src="data:image/jpeg;base64,{img_b64}"
+                    <img src="assets/couple.jpg"
                          alt="Subhankar and Mousmi"
                          style="width:100%; height:100%; object-fit:cover;">
                 </div>
