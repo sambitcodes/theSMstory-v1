@@ -64,25 +64,25 @@ render_header()
 # CSV mappings (root-level files)
 # ---------------------------------------------------------------------
 csv_files_ingredients = {
-    "Local-List": "data/ingredients/Local-List.csv",
-    "Reception-Raasan": "data/ingredients/Reception-Raasan.csv",
-    "Reception-Tent": "data/ingredients/Reception-Tent.csv",
-    "Reception-Extras": "data/ingredients/Reception-Extras.csv",
-    "Reception-Pakoda": "data/ingredients/Reception-Pakoda.csv",
-    "Reception-Coffee": "data/ingredients/Reception-Coffee.csv",
-    "Home-Raasan": "data/ingredients/Home-Raasan.csv",
-    "Home-Dessert": "data/ingredients/Home-Dessert.csv",
-    "Home-Tent": "data/ingredients/Home-Tent.csv",
+    "Local-List": "Local-List.csv",
+    "Reception-Raasan": "Reception-Raasan.csv",
+    "Reception-Tent": "Reception-Tent.csv",
+    "Reception-Extras": "Reception-Extras.csv",
+    "Reception-Pakoda": "Reception-Pakoda.csv",
+    "Reception-Coffee": "Reception-Coffee.csv",
+    "Home-Raasan": "Home-Raasan.csv",
+    "Home-Dessert": "Home-Dessert.csv",
+    "Home-Tent": "Home-Tent.csv",
 }
 
 csv_files_invitees = {
-    "Invitee-List-Poite-03.12.25": "data/invitees/Invitee-List-Poite-03.12.25.csv",
-    "Invitee-List-Barati-05.12.25": "data/invitees/Invitee-List-Barati-05.12.25.csv",
-    "Invitee-List-Boubhaat-07.12.25": "data/invitees/Invitee-List-Boubhaat-07.12.25.csv",
-    "Invitee-List-Return-06.12.25": "data/invitees/Invitee-List-Return-06.12.25.csv",
+    "Invitee-List-Poite-03.12.25": "Invitee-List-Poite-03.12.25.csv",
+    "Invitee-List-Barati-05.12.25": "Invitee-List-Barati-05.12.25.csv",
+    "Invitee-List-Boubhaat-07.12.25": "Invitee-List-Boubhaat-07.12.25.csv",
+    "Invitee-List-Return-06.12.25": "Invitee-List-Return-06.12.25.csv",
 }
 
-menu_csv = "data/menus/Menus-List.csv"
+menu_csv = "Menus-List.csv"
 
 
 # ---------------------------------------------------------------------
@@ -239,7 +239,7 @@ with tab1:
                                         True
                                     )
 
-                        # NEW: Reset button
+                        # Reset button
                         with col5:
                             if st.button(
                                 "Reset",
@@ -249,7 +249,7 @@ with tab1:
                                 db.reset_ingredient(selected_list, ing["item_name"])
                                 st.rerun()
 
-                        # Optional menu column placeholder
+                        # Placeholder
                         with col6:
                             pass
 
@@ -337,16 +337,56 @@ with tab2:
 
     if selected_inv_list:
         invitees = db.get_invitees(selected_inv_list)
-        total = db.get_total_headcount(selected_inv_list)
+        total_headcount = db.get_total_headcount(selected_inv_list)
 
-        s1, s2, s3 = st.columns(3)
-        with s1:
-            render_metric_box("Total Guests", str(len(invitees)), "👥")
-        with s2:
-            render_metric_box("Total Headcount", str(total), "🍽️")
-        with s3:
-            is_barati = "Barati" in selected_inv_list
-            render_metric_box("Barati Special", "Yes" if is_barati else "No", "✨")
+        # Detect Barati list
+        is_barati = (
+            "Barati" in selected_inv_list
+            or "Barati" in INVITEE_LISTS.get(selected_inv_list, "")
+        )
+
+        if is_barati:
+            # --- Extra stats for Barati ---
+            # Total people going to Sakti = sum(to_sakti)
+            total_to_sakti = sum(int(g.get("to_sakti") or 0) for g in invitees)
+
+            # Only those going to Sakti are considered for bus/car
+            def _travel(v):
+                return (v or "").strip().lower()
+
+            bus_headcount = sum(
+                int(g.get("to_sakti") or 0)
+                for g in invitees
+                if _travel(g.get("travel_by")) == "bus"
+            )
+            car_headcount = sum(
+                int(g.get("to_sakti") or 0)
+                for g in invitees
+                if _travel(g.get("travel_by")) == "car"
+            )
+
+            c1m, c2m, c3m, c4m = st.columns(4)
+            with c1m:
+                render_metric_box("Total Guests", str(len(invitees)), "👥")
+            with c2m:
+                render_metric_box("Total Headcount", str(total_headcount), "🍽️")
+            with c3m:
+                render_metric_box("People to Sakti", str(total_to_sakti), "🧳")
+            with c4m:
+                render_metric_box(
+                    "Travel (Bus / Car)",
+                    f"Bus: {bus_headcount} | Car: {car_headcount}",
+                    "🚌",
+                )
+        else:
+            # Non-Barati lists: simpler metrics
+            s1, s2, s3 = st.columns(3)
+            with s1:
+                render_metric_box("Total Guests", str(len(invitees)), "👥")
+            with s2:
+                render_metric_box("Total Headcount", str(total_headcount), "🍽️")
+            with s3:
+                render_metric_box("Barati Special", "No", "✨")
 
         st.divider()
 
@@ -370,16 +410,22 @@ with tab2:
             filtered_inv = invitees
 
         if filtered_inv:
-            is_barati = "Barati" in selected_inv_list
+            is_barati = (
+                "Barati" in selected_inv_list
+                or "Barati" in INVITEE_LISTS.get(selected_inv_list, "")
+            )
             for idx, guest in enumerate(filtered_inv):
                 with st.container():
                     if is_barati:
+                        # Barati card layout: name, lunch ±, Sakti ±, travel, reset
                         col1, col2, col3, col4, col5, col6, col7 = st.columns(
-                            [2, 0.7, 0.7, 0.9, 1.4, 1.2, 0.9]
+                            [2, 0.7, 0.7, 0.9, 1.8, 1.2, 0.9]
                         )
+
                         with col1:
                             st.write(f"**{guest['name']}**")
-                        # - / count / +
+
+                        # Lunch - / count / +
                         with col2:
                             if st.button(
                                 "➖",
@@ -390,8 +436,8 @@ with tab2:
                                         selected_inv_list,
                                         guest["name"],
                                         guest["lunch"] - 1,
-                                        guest["to_sakti"],
-                                        guest["travel_by"],
+                                        guest.get("to_sakti"),
+                                        guest.get("travel_by"),
                                     )
                                     st.rerun()
                         with col3:
@@ -405,18 +451,55 @@ with tab2:
                                     selected_inv_list,
                                     guest["name"],
                                     guest["lunch"] + 1,
-                                    guest["to_sakti"],
-                                    guest["travel_by"],
+                                    guest.get("to_sakti"),
+                                    guest.get("travel_by"),
                                 )
                                 st.rerun()
+
+                        # Sakti - / label / +
+                        current_sakti = int(guest.get("to_sakti") or 0)
                         with col5:
-                            st.write(f"Sakti: **{guest.get('to_sakti', 0)}**")
+                            s1c, s2c, s3c = st.columns([0.8, 1.2, 0.8])
+                            with s1c:
+                                if st.button(
+                                    "➖",
+                                    key=f"sakti_minus_{idx}_{selected_inv_list}",
+                                ):
+                                    if current_sakti > 0:
+                                        new_sakti = current_sakti - 1
+                                        db.update_invitee(
+                                            selected_inv_list,
+                                            guest["name"],
+                                            guest["lunch"],
+                                            new_sakti,
+                                            guest.get("travel_by"),
+                                        )
+                                        st.rerun()
+                            with s2c:
+                                st.write(f"Sakti: **{current_sakti}**")
+                            with s3c:
+                                if st.button(
+                                    "➕",
+                                    key=f"sakti_plus_{idx}_{selected_inv_list}",
+                                ):
+                                    if current_sakti < int(guest["lunch"]):
+                                        new_sakti = current_sakti + 1
+                                        db.update_invitee(
+                                            selected_inv_list,
+                                            guest["name"],
+                                            guest["lunch"],
+                                            new_sakti,
+                                            guest.get("travel_by"),
+                                        )
+                                        st.rerun()
+
+                        # Travel by (Bus / Car / etc.)
                         with col6:
                             travel = st.selectbox(
                                 "Travel",
                                 TRAVEL_OPTIONS,
                                 index=TRAVEL_OPTIONS.index(
-                                    guest["travel_by"]
+                                    guest.get("travel_by")
                                 )
                                 if guest.get("travel_by") in TRAVEL_OPTIONS
                                 else 0,
@@ -427,11 +510,12 @@ with tab2:
                                     selected_inv_list,
                                     guest["name"],
                                     guest["lunch"],
-                                    guest["to_sakti"],
+                                    guest.get("to_sakti"),
                                     travel,
                                 )
                                 st.rerun()
-                        # NEW: Reset
+
+                        # Reset guest (lunch -> original_lunch)
                         with col7:
                             if st.button(
                                 "Reset",
@@ -440,6 +524,7 @@ with tab2:
                                 db.reset_invitee(selected_inv_list, guest["name"])
                                 st.rerun()
                     else:
+                        # Non-Barati guest layout
                         col1, col2, col3, col4, col5 = st.columns(
                             [2, 0.7, 0.7, 0.9, 0.9]
                         )
@@ -470,7 +555,6 @@ with tab2:
                                     guest["lunch"] + 1,
                                 )
                                 st.rerun()
-                        # NEW: Reset
                         with col5:
                             if st.button(
                                 "Reset",
@@ -503,13 +587,17 @@ with tab2:
                 if not ok:
                     render_alert(msg, "error")
                 else:
-                    if "Barati" in selected_inv_list:
-                        # For barati, also need sakti + travel
+                    if (
+                        "Barati" in selected_inv_list
+                        or "Barati" in INVITEE_LISTS.get(selected_inv_list, "")
+                    ):
+                        # For Barati, also capture initial Sakti + travel
                         s1, s2 = st.columns(2)
                         with s1:
                             to_sakti = st.number_input(
                                 "To Sakti",
                                 min_value=0,
+                                max_value=int(new_lunch),
                                 key=f"new_sakti_{selected_inv_list}",
                             )
                         with s2:
