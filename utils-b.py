@@ -12,7 +12,7 @@ def render_header():
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
     st.markdown("""
 <div class="header-main">
-    <h1>
+     <h1>
         💕the<span style="color: red; font-size: 1.3em;">S</span>oul<span style="color: red; font-size: 1.3em;">M</span>atestory💕
     </h1>
     <p>A Beautiful Journey of Love & Celebration</p>

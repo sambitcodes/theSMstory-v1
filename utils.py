@@ -6,22 +6,62 @@ import streamlit as st
 import pandas as pd
 from io import BytesIO
 from config import COLORS, CUSTOM_CSS
+from PIL import Image
+from pathlib import Path
+import base64
+
+def _img_to_base64(img_path: Path) -> str:
+    with img_path.open("rb") as f:
+        return base64.b64encode(f.read()).decode("utf-8")
 
 def render_header():
     """Render the header section with custom styling"""
     st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
-    st.markdown("""
+
+    # --- Circular couple photo just above the title ---
+    # Adjust this if needed: image is assumed to be in the same folder as this file.
+    img_path = Path(__file__).resolve().parent / "assets" / "couple.jpg"
+    if img_path.is_file():
+        img_b64 = _img_to_base64(img_path)
+        # If your file is PNG, change image/jpeg -> image/png below.
+        st.markdown(
+            f"""
+            <div style="display:flex; justify-content:center;">
+                <div style="
+                    width:200px;
+                    height:200px;
+                    border-radius:50%;
+                    overflow:hidden;
+                    border:4px solid #d4af37;
+                    box-shadow:0 0 12px rgba(0,0,0,0.18);
+                ">
+                    <img src="data:image/jpeg;base64,{img_b64}"
+                         alt="Subhankar and Mousmi"
+                         style="width:100%; height:100%; object-fit:cover;">
+                </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # --- Your existing header HTML (unchanged) ---
+    st.markdown(
+        """
 <div class="header-main">
     <h1>
-        💕the<span style="color: red; font-size: 1.3em;">S</span>oul<span style="color: red; font-size: 1.3em;">M</span>atestory💕
+        💕the<span style="color: red; font-size: 1.3em;">S</span>oul
+        <span style="color: red; font-size: 1.3em;">M</span>atestory💕
     </h1>
     <p>A Beautiful Journey of Love & Celebration</p>
     <div class="flower-divider"></div>
     <p style="color: #2c3e50; font-size: 0.95em;">
-        <strong><span style="color: red;">S</span>UBHANKAR</strong> weds <strong><span style="color: red;">M</span>OUSMI</strong>
+        <strong><span style="color: red;">S</span>UBHANKAR</strong> weds
+        <strong><span style="color: red;">M</span>OUSMI</strong>
     </p>
 </div>
-""", unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True,
+    )
 
 def render_footer():
     """Render the footer section"""
