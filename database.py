@@ -75,9 +75,13 @@ class WeddingDatabase:
                         lunch INTEGER NOT NULL,
                         to_sakti INTEGER,
                         travel_by TEXT,
+                        bus_sakti INTEGER DEFAULT 0,
+                        car_sakti INTEGER DEFAULT 0,
                         original_lunch INTEGER NOT NULL,
                         original_to_sakti INTEGER,
                         original_travel_by TEXT,
+                        original_bus_sakti INTEGER DEFAULT 0,
+                        original_car_sakti INTEGER DEFAULT 0,
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                         UNIQUE(list_name, name)
                     )
@@ -374,7 +378,6 @@ class WeddingDatabase:
                                 or name.lower().startswith("index")
                                 or name.lower().endswith("total")
                             ):
-                                # skip header / summary line like '117 Total'
                                 continue
 
                             lunch = int(lunch_raw)
@@ -388,13 +391,20 @@ class WeddingDatabase:
                                 val = row["Travel By"]
                                 travel_by = str(val).strip() if pd.notna(val) else None
 
+                            # initial bus_sakti, car_sakti = 0
+                            bus_sakti = 0
+                            car_sakti = 0
+
                             cursor.execute(
                                 """
                                 INSERT INTO invitees
                                 (list_name, name, lunch,
                                  to_sakti, travel_by,
-                                 original_lunch, original_to_sakti, original_travel_by)
-                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                 bus_sakti, car_sakti,
+                                 original_lunch, original_to_sakti,
+                                 original_travel_by,
+                                 original_bus_sakti, original_car_sakti)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                 """,
                                 (
                                     list_name,
@@ -402,9 +412,13 @@ class WeddingDatabase:
                                     lunch,
                                     to_sakti,
                                     travel_by,
+                                    bus_sakti,
+                                    car_sakti,
                                     lunch,
                                     to_sakti,
                                     travel_by,
+                                    bus_sakti,
+                                    car_sakti,
                                 ),
                             )
                         except (ValueError, sqlite3.IntegrityError, KeyError):
@@ -448,6 +462,8 @@ class WeddingDatabase:
         lunch: int,
         to_sakti: Optional[int] = None,
         travel_by: Optional[str] = None,
+        bus_sakti: int = 0,
+        car_sakti: int = 0,
     ) -> bool:
         """Add new invitee with original_* set to first values."""
         try:
@@ -458,8 +474,11 @@ class WeddingDatabase:
                 INSERT INTO invitees
                 (list_name, name, lunch,
                  to_sakti, travel_by,
-                 original_lunch, original_to_sakti, original_travel_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 bus_sakti, car_sakti,
+                 original_lunch, original_to_sakti,
+                 original_travel_by,
+                 original_bus_sakti, original_car_sakti)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     list_name,
@@ -467,9 +486,13 @@ class WeddingDatabase:
                     lunch,
                     to_sakti,
                     travel_by,
+                    bus_sakti,
+                    car_sakti,
                     lunch,
                     to_sakti,
                     travel_by,
+                    bus_sakti,
+                    car_sakti,
                 ),
             )
             conn.commit()
@@ -488,29 +511,39 @@ class WeddingDatabase:
         lunch: int,
         to_sakti: Optional[int] = None,
         travel_by: Optional[str] = None,
+        bus_sakti: Optional[int] = None,
+        car_sakti: Optional[int] = None,
     ) -> None:
         """Update invitee info; original_* stay unchanged."""
         try:
             conn = self.get_connection()
             cur = conn.cursor()
-            if to_sakti is not None or travel_by is not None:
-                cur.execute(
-                    """
-                    UPDATE invitees
-                    SET lunch = ?, to_sakti = ?, travel_by = ?
-                    WHERE list_name = ? AND name = ?
-                    """,
-                    (lunch, to_sakti, travel_by, list_name, name),
-                )
-            else:
-                cur.execute(
-                    """
-                    UPDATE invitees
-                    SET lunch = ?
-                    WHERE list_name = ? AND name = ?
-                    """,
-                    (lunch, list_name, name),
-                )
+
+            # Build dynamic update based on which values are provided
+            fields = ["lunch = ?"]
+            values = [lunch]
+
+            if to_sakti is not None:
+                fields.append("to_sakti = ?")
+                values.append(to_sakti)
+            if travel_by is not None:
+                fields.append("travel_by = ?")
+                values.append(travel_by)
+            if bus_sakti is not None:
+                fields.append("bus_sakti = ?")
+                values.append(bus_sakti)
+            if car_sakti is not None:
+                fields.append("car_sakti = ?")
+                values.append(car_sakti)
+
+            values.extend([list_name, name])
+            sql = (
+                "UPDATE invitees SET "
+                + ", ".join(fields)
+                + " WHERE list_name = ? AND name = ?"
+            )
+            cur.execute(sql, tuple(values))
+
             conn.commit()
             conn.close()
         except Exception as e:
@@ -541,6 +574,8 @@ class WeddingDatabase:
         - lunch -> original_lunch
         - to_sakti -> original_to_sakti (or 0 if NULL)
         - travel_by -> original_travel_by
+        - bus_sakti -> original_bus_sakti
+        - car_sakti -> original_car_sakti
         """
         try:
             conn = self.get_connection()
@@ -550,7 +585,9 @@ class WeddingDatabase:
                 UPDATE invitees
                 SET lunch = original_lunch,
                     to_sakti = COALESCE(original_to_sakti, 0),
-                    travel_by = original_travel_by
+                    travel_by = original_travel_by,
+                    bus_sakti = COALESCE(original_bus_sakti, 0),
+                    car_sakti = COALESCE(original_car_sakti, 0)
                 WHERE list_name = ? AND name = ?
                 """,
                 (list_name, name),

@@ -1,11 +1,12 @@
 """
 Main Streamlit Application - Tabu weds Mousumi
 Wedding Management System with Beautiful UI.
-Includes per-card Reset for ingredients and invitees and enhanced metrics.
+Includes per-card Reset for ingredients and invitees, enhanced metrics, and pretty menus.
 """
 
 import os
 import time
+from typing import List, Dict
 
 import pandas as pd
 import streamlit as st
@@ -60,7 +61,7 @@ render_wedding_theme_background()
 render_header()
 
 # ---------------------------------------------------------------------
-# CSV mappings (root-level files)
+# CSV mappings
 # ---------------------------------------------------------------------
 csv_files_ingredients = {
     "Local-List": "data/ingredients/Local-List.csv",
@@ -124,6 +125,230 @@ def load_initial_data() -> None:
 load_initial_data()
 
 # ---------------------------------------------------------------------
+# MENU helper functions (from your previous version)
+# ---------------------------------------------------------------------
+VEG_KEYWORDS = [
+    "paneer",
+    "mushroom",
+    "veg",
+    "sabji",
+    "dal",
+    "daal",
+    "bhaat",
+    "rice",
+    "saag",
+    "kophi",
+    "gobi",
+    "chutney",
+    "salad",
+    "upma",
+    "luchi",
+    "puri",
+    "roti",
+    "jeera rice",
+    "palak",
+    "mix veg",
+    "gulab jamun",
+    "paayesh",
+    "payesh",
+    "halwa",
+    "rosogolla",
+    "ice cream",
+    "jalebi",
+    "dahi vada",
+    "manchurian",
+    "papdi chat",
+    "veg cutlet",
+    "snacks",
+    "desserts",
+]
+
+NONVEG_KEYWORDS = [
+    "chicken",
+    "fish",
+    "macher",
+    "maacher",
+    "egg",
+    "mutton",
+    "pakoda",
+]
+
+
+def split_menu_items(raw: str) -> List[str]:
+    if not raw:
+        return []
+    parts: List[str] = []
+    for line in str(raw).splitlines():
+        for piece in line.split(","):
+            item = piece.strip()
+            if item:
+                parts.append(item)
+    return parts
+
+
+def detect_veg_flag(item: str) -> str:
+    name = item.lower()
+    if any(k in name for k in NONVEG_KEYWORDS):
+        return "non-veg"
+    if any(k in name for k in VEG_KEYWORDS):
+        return "veg"
+    return "veg"
+
+
+def classify_menu_item(item: str) -> str:
+    name = item.lower()
+    if any(k in name for k in ["jalebi", "halwa", "rosogolla", "ice cream", "payesh", "paayesh", "dessert"]):
+        return "Desserts"
+    if any(
+        k in name
+        for k in [
+            "snacks",
+            "chowmein",
+            "manchurian",
+            "pakoda",
+            "pani puri",
+            "papdi chat",
+            "cutlet",
+            "starter",
+        ]
+    ):
+        return "Starters"
+    if any(
+        k in name
+        for k in [
+            "salad",
+            "chutney",
+            "papad",
+            "dahi vada",
+            "fruit",
+            "sides",
+        ]
+    ):
+        return "Sides"
+    if any(k in name for k in ["roti", "puri", "palak puri", "bread"]):
+        return "Breads"
+    if any(
+        k in name
+        for k in [
+            "chicken",
+            "fish",
+            "macher",
+            "maacher",
+            "rice",
+            "jeera rice",
+            "kofta",
+            "matar paneer",
+            "dal fry",
+        ]
+    ):
+        return "Main course"
+    return "Sabjis"
+
+
+def build_menu_structure(raw: str) -> Dict[str, List[Dict[str, str]]]:
+    items = split_menu_items(raw)
+    menu_struct: Dict[str, List[Dict[str, str]]] = {
+        "Main course": [],
+        "Sabjis": [],
+        "Starters": [],
+        "Breads": [],
+        "Desserts": [],
+        "Sides": [],
+    }
+    for item in items:
+        category = classify_menu_item(item)
+        veg_flag = detect_veg_flag(item)
+        menu_struct.setdefault(category, []).append(
+            {"name": item, "veg_flag": veg_flag}
+        )
+    return menu_struct
+
+
+def render_menu_item_row(
+    category: str,
+    idx: int,
+    item: Dict[str, str],
+    date: str,
+    meal: str,
+    menu_items_list: List[str],
+) -> None:
+    icon = "🟢" if item["veg_flag"] == "veg" else "🔴"
+    label = f"{icon} {item['name']}"
+
+    col1, col2, col3 = st.columns([6, 1, 1])
+    with col1:
+        st.write(label)
+
+    edit_key = f"edit_menu_{category}_{idx}_{date}_{meal}"
+    new_name_key = f"edit_menu_name_{category}_{idx}_{date}_{meal}"
+
+    with col2:
+        if st.button(
+            "✏️",
+            key=f"btn_edit_{category}_{idx}_{date}_{meal}",
+            help="Edit item name",
+        ):
+            st.session_state[edit_key] = True
+
+    with col3:
+        if st.button(
+            "🗑️",
+            key=f"btn_del_{category}_{idx}_{date}_{meal}",
+            help="Delete item",
+        ):
+            original = item["name"]
+            menu_items_list[:] = [x for x in menu_items_list if x != original]
+            updated_raw = ", ".join(menu_items_list)
+            conn = db.get_connection()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE menus
+                SET menu_items = ?
+                WHERE date = ? AND meal = ?
+                """,
+                (updated_raw, date, meal),
+            )
+            conn.commit()
+            conn.close()
+            st.rerun()
+
+    if st.session_state.get(edit_key):
+        ec1, ec2 = st.columns([4, 1])
+        with ec1:
+            new_name = st.text_input(
+                "New name",
+                value=item["name"],
+                key=new_name_key,
+            )
+        with ec2:
+            if st.button(
+                "Save",
+                key=f"btn_save_{category}_{idx}_{date}_{meal}",
+            ):
+                original = item["name"]
+                for i, v in enumerate(menu_items_list):
+                    if v == original:
+                        menu_items_list[i] = new_name
+                        break
+                updated_raw = ", ".join(menu_items_list)
+                conn = db.get_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    UPDATE menus
+                    SET menu_items = ?
+                    WHERE date = ? AND meal = ?
+                    """,
+                    (updated_raw, date, meal),
+                )
+                conn.commit()
+                conn.close()
+                st.session_state[edit_key] = False
+                st.rerun()
+
+
+# ---------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------
 tab1, tab2, tab3, tab4 = st.tabs(
@@ -131,7 +356,7 @@ tab1, tab2, tab3, tab4 = st.tabs(
 )
 
 # ---------------------------------------------------------------------
-# TAB 1: INGREDIENTS
+# TAB 1: INGREDIENTS (unchanged)
 # ---------------------------------------------------------------------
 with tab1:
     st.markdown("### 📦 Ingredient Delivery Tracking")
@@ -153,7 +378,6 @@ with tab1:
         ingredients = db.get_ingredients(selected_list)
 
         if ingredients:
-            # Summary metrics (counts)
             total_items = len(ingredients)
             completed_items = [i for i in ingredients if i["status"] == "Completed"]
             incomplete_items = [i for i in ingredients if i["status"] == "Incomplete"]
@@ -166,7 +390,6 @@ with tab1:
             with s3:
                 render_metric_box("Incomplete Items", str(len(incomplete_items)), "⚠️")
 
-            # Quantities: total, complete, incomplete
             total_qty = sum(float(i["quantity"]) for i in ingredients)
             total_incomplete_qty = sum(
                 float(i.get("delivered_quantity") or 0.0) for i in incomplete_items
@@ -183,7 +406,6 @@ with tab1:
 
             st.divider()
 
-            # Local search
             sc1, sc2 = st.columns([3, 1])
             with sc1:
                 search_term = st.text_input(
@@ -205,7 +427,6 @@ with tab1:
                 filtered = ingredients
 
             if filtered:
-                # Split into sections
                 incomplete_filtered = [
                     i for i in filtered if i["status"] == "Incomplete"
                 ]
@@ -224,11 +445,9 @@ with tab1:
                                 [2.2, 1.4, 1.2, 1.6, 1.2, 1.2, 0.7]
                             )
 
-                            # Name
                             with col1:
                                 st.write(f"**{ing['item_name']}**")
 
-                            # Current quantity
                             with col2:
                                 st.write(
                                     format_quantity_display(
@@ -236,14 +455,12 @@ with tab1:
                                     )
                                 )
 
-                            # Status
                             with col3:
                                 st.markdown(
                                     render_status_badge(ing["status"]),
                                     unsafe_allow_html=True,
                                 )
 
-                            # Complete / Incomplete
                             with col4:
                                 b1, b2 = st.columns(2)
                                 with b1:
@@ -269,7 +486,6 @@ with tab1:
                                             f"enter_qty_{row_key}"
                                         ] = True
 
-                            # Edit quantity
                             with col5:
                                 if st.button(
                                     "Edit Qty",
@@ -280,7 +496,6 @@ with tab1:
                                         f"edit_qty_{row_key}"
                                     ] = True
 
-                            # Reset to original
                             with col6:
                                 if st.button(
                                     "Reset",
@@ -290,11 +505,9 @@ with tab1:
                                     db.reset_ingredient(selected_list, ing["item_name"])
                                     st.rerun()
 
-                            # Spacer
                             with col7:
                                 pass
 
-                            # Incomplete quantity entry
                             if st.session_state.get(
                                 f"enter_qty_{row_key}", False
                             ):
@@ -321,7 +534,6 @@ with tab1:
                                         ] = False
                                         st.rerun()
 
-                            # Edit quantity form
                             if st.session_state.get(
                                 f"edit_qty_{row_key}", False
                             ):
@@ -351,7 +563,6 @@ with tab1:
 
                             st.divider()
 
-                # Sections
                 if incomplete_filtered:
                     st.markdown("#### ⚠️ Incomplete Items")
                     render_ingredient_cards(incomplete_filtered, "inc")
@@ -364,7 +575,6 @@ with tab1:
             else:
                 render_empty_state("No ingredients found", "🔍")
 
-            # Add new ingredient
             st.markdown("#### ➕ Add New Ingredient")
             a1, a2, a3, a4 = st.columns([2, 1.5, 1, 1])
             with a1:
@@ -428,22 +638,10 @@ with tab2:
         )
 
         if is_barati:
-            # Extra stats for Barati
             total_to_sakti = sum(int(g.get("to_sakti") or 0) for g in invitees)
-
-            def _travel(v: Optional[str]) -> str:
-                return (v or "").strip().lower()
-
-            bus_headcount = sum(
-                int(g.get("to_sakti") or 0)
-                for g in invitees
-                if _travel(g.get("travel_by")) == "bus"
-            )
-            car_headcount = sum(
-                int(g.get("to_sakti") or 0)
-                for g in invitees
-                if _travel(g.get("travel_by")) == "car"
-            )
+            total_bus = sum(int(g.get("bus_sakti") or 0) for g in invitees)
+            total_car = sum(int(g.get("car_sakti") or 0) for g in invitees)
+            total_unsure = max(total_to_sakti - total_bus - total_car, 0)
 
             c1m, c2m, c3m, c4m = st.columns(4)
             with c1m:
@@ -454,8 +652,8 @@ with tab2:
                 render_metric_box("People to Sakti", str(total_to_sakti), "🧳")
             with c4m:
                 render_metric_box(
-                    "Travel (Bus / Car)",
-                    f"Bus: {bus_headcount} | Car: {car_headcount}",
+                    "Sakti Bus/Car/Unsure",
+                    f"Bus: {total_bus} | Car: {total_car} | Unsure: {total_unsure}",
                     "🚌",
                 )
         else:
@@ -498,9 +696,9 @@ with tab2:
             for idx, guest in enumerate(filtered_inv):
                 with st.container():
                     if is_barati:
-                        # Barati layout: name, lunch ±, Sakti ±, travel, reset
+                        # Barati row: name, lunch ±, Sakti ±, Bus/Car inputs, Unsure derived, Reset
                         col1, col2, col3, col4, col5, col6, col7 = st.columns(
-                            [2, 0.7, 0.7, 0.9, 1.8, 1.2, 0.9]
+                            [2, 0.7, 0.7, 1.4, 2.6, 1.0, 0.9]
                         )
                         with col1:
                             st.write(f"**{guest['name']}**")
@@ -517,7 +715,9 @@ with tab2:
                                         guest["name"],
                                         guest["lunch"] - 1,
                                         guest.get("to_sakti"),
-                                        guest.get("travel_by"),
+                                        None,
+                                        guest.get("bus_sakti"),
+                                        guest.get("car_sakti"),
                                     )
                                     st.rerun()
                         with col3:
@@ -532,14 +732,18 @@ with tab2:
                                     guest["name"],
                                     guest["lunch"] + 1,
                                     guest.get("to_sakti"),
-                                    guest.get("travel_by"),
+                                    None,
+                                    guest.get("bus_sakti"),
+                                    guest.get("car_sakti"),
                                 )
                                 st.rerun()
 
-                        # Sakti - / label / +
+                        # Sakti count
                         current_sakti = int(guest.get("to_sakti") or 0)
+                        current_bus = int(guest.get("bus_sakti") or 0)
+                        current_car = int(guest.get("car_sakti") or 0)
                         with col5:
-                            s1c, s2c, s3c = st.columns([0.8, 1.2, 0.8])
+                            s1c, s2c, s3c = st.columns([0.8, 1.4, 0.8])
                             with s1c:
                                 if st.button(
                                     "➖",
@@ -547,14 +751,22 @@ with tab2:
                                 ):
                                     if current_sakti > 0:
                                         new_sakti = current_sakti - 1
-                                        db.update_invitee(
-                                            selected_inv_list,
-                                            guest["name"],
-                                            guest["lunch"],
-                                            new_sakti,
-                                            guest.get("travel_by"),
-                                        )
-                                        st.rerun()
+                                        if current_bus + current_car > new_sakti:
+                                            render_alert(
+                                                "Reduce Bus/Car first before reducing Sakti.",
+                                                "error",
+                                            )
+                                        else:
+                                            db.update_invitee(
+                                                selected_inv_list,
+                                                guest["name"],
+                                                guest["lunch"],
+                                                new_sakti,
+                                                None,
+                                                current_bus,
+                                                current_car,
+                                            )
+                                            st.rerun()
                             with s2c:
                                 st.write(f"Sakti: **{current_sakti}**")
                             with s3c:
@@ -562,40 +774,60 @@ with tab2:
                                     "➕",
                                     key=f"sakti_plus_{idx}_{selected_inv_list}",
                                 ):
-                                    if current_sakti < int(guest["lunch"]):
-                                        new_sakti = current_sakti + 1
-                                        db.update_invitee(
-                                            selected_inv_list,
-                                            guest["name"],
-                                            guest["lunch"],
-                                            new_sakti,
-                                            guest.get("travel_by"),
-                                        )
-                                        st.rerun()
+                                    new_sakti = current_sakti + 1
+                                    db.update_invitee(
+                                        selected_inv_list,
+                                        guest["name"],
+                                        guest["lunch"],
+                                        new_sakti,
+                                        None,
+                                        current_bus,
+                                        current_car,
+                                    )
+                                    st.rerun()
 
-                        # Travel by
+                        # Bus / Car inputs, Unsure derived
                         with col6:
-                            travel = st.selectbox(
-                                "Travel",
-                                TRAVEL_OPTIONS,
-                                index=TRAVEL_OPTIONS.index(
-                                    guest.get("travel_by")
+                            bcol, ccol = st.columns(2)
+                            with bcol:
+                                new_bus = st.number_input(
+                                    "Bus",
+                                    min_value=0,
+                                    max_value=current_sakti,
+                                    value=current_bus,
+                                    key=f"bus_{idx}_{selected_inv_list}",
                                 )
-                                if guest.get("travel_by") in TRAVEL_OPTIONS
-                                else 0,
-                                key=f"travel_{idx}_{selected_inv_list}",
-                            )
-                            if travel != guest.get("travel_by"):
-                                db.update_invitee(
-                                    selected_inv_list,
-                                    guest["name"],
-                                    guest["lunch"],
-                                    guest.get("to_sakti"),
-                                    travel,
+                            with ccol:
+                                new_car = st.number_input(
+                                    "Car",
+                                    min_value=0,
+                                    max_value=current_sakti,
+                                    value=current_car,
+                                    key=f"car_{idx}_{selected_inv_list}",
                                 )
-                                st.rerun()
 
-                        # Reset: lunch, to_sakti, travel_by
+                            if (new_bus, new_car) != (current_bus, current_car):
+                                if new_bus + new_car > current_sakti:
+                                    render_alert(
+                                        "Bus + Car cannot exceed Sakti.",
+                                        "error",
+                                    )
+                                else:
+                                    db.update_invitee(
+                                        selected_inv_list,
+                                        guest["name"],
+                                        guest["lunch"],
+                                        current_sakti,
+                                        None,
+                                        new_bus,
+                                        new_car,
+                                    )
+                                    st.rerun()
+
+                            unsure = max(current_sakti - new_bus - new_car, 0)
+                            st.write(f"Unsure: **{unsure}**")
+
+                        # Reset
                         with col7:
                             if st.button(
                                 "Reset",
@@ -603,8 +835,9 @@ with tab2:
                             ):
                                 db.reset_invitee(selected_inv_list, guest["name"])
                                 st.rerun()
+
                     else:
-                        # Non-Barati layout
+                        # Non-Barati layout (unchanged)
                         col1, col2, col3, col4, col5 = st.columns(
                             [2, 0.7, 0.7, 0.9, 0.9]
                         )
@@ -667,8 +900,13 @@ with tab2:
                 if not ok:
                     render_alert(msg, "error")
                 else:
-                    if is_barati:
-                        s1c, s2c = st.columns(2)
+                    is_barati_now = (
+                        "Barati" in selected_inv_list
+                        or "Barati"
+                        in INVITEE_LISTS.get(selected_inv_list, "")
+                    )
+                    if is_barati_now:
+                        s1c, s2c, s3c = st.columns(3)
                         with s1c:
                             to_sakti = st.number_input(
                                 "To Sakti",
@@ -677,22 +915,41 @@ with tab2:
                                 key=f"new_sakti_{selected_inv_list}",
                             )
                         with s2c:
-                            travel = st.selectbox(
-                                "Travel",
-                                TRAVEL_OPTIONS,
-                                key=f"new_travel_{selected_inv_list}",
+                            bus = st.number_input(
+                                "Bus",
+                                min_value=0,
+                                max_value=int(to_sakti),
+                                key=f"new_bus_{selected_inv_list}",
                             )
-                        if db.add_invitee(
-                            selected_inv_list,
-                            new_name,
-                            int(new_lunch),
-                            int(to_sakti),
-                            travel,
-                        ):
-                            render_alert("Guest added.", "success")
-                            st.rerun()
+                        with s3c:
+                            car = st.number_input(
+                                "Car",
+                                min_value=0,
+                                max_value=int(to_sakti),
+                                key=f"new_car_{selected_inv_list}",
+                            )
+
+                        if bus + car > to_sakti:
+                            render_alert(
+                                "Bus + Car cannot exceed Sakti.", "error"
+                            )
                         else:
-                            render_alert("Guest already exists.", "error")
+                            # no travel field now
+                            if db.add_invitee(
+                                selected_inv_list,
+                                new_name,
+                                int(new_lunch),
+                                int(to_sakti),
+                                None,
+                                int(bus),
+                                int(car),
+                            ):
+                                render_alert("Guest added.", "success")
+                                st.rerun()
+                            else:
+                                render_alert(
+                                    "Guest already exists.", "error"
+                                )
                     else:
                         if db.add_invitee(
                             selected_inv_list, new_name, int(new_lunch)
@@ -703,7 +960,7 @@ with tab2:
                             render_alert("Guest already exists.", "error")
 
 # ---------------------------------------------------------------------
-# TAB 3: MENU
+# TAB 3: MENU (pretty, editable)
 # ---------------------------------------------------------------------
 with tab3:
     st.markdown("### 🍽️ Menu Planning & Details")
@@ -741,17 +998,38 @@ with tab3:
                     )
 
                 st.divider()
-                st.markdown("#### 📋 Menu Items")
-                st.markdown(
-                    f"""
-                    <div style="background:#fdf5e6;padding:20px;border-radius:10px;
-                                border-left:4px solid #d4af37;">
-                        {menu_row['menu_items']}
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                st.markdown("#### 📋 Menu Items (Beautiful View)")
 
+                raw_menu_text = menu_row["menu_items"]
+                working_items = split_menu_items(raw_menu_text)
+                structured_menu = build_menu_structure(raw_menu_text)
+
+                for category in [
+                    "Main course",
+                    "Sabjis",
+                    "Starters",
+                    "Breads",
+                    "Desserts",
+                    "Sides",
+                ]:
+                    items = structured_menu.get(category, [])
+                    if not items:
+                        continue
+                    with st.expander(
+                        f"{category} ({len(items)})", expanded=False
+                    ):
+                        for idx, item in enumerate(items):
+                            render_menu_item_row(
+                                category,
+                                idx,
+                                item,
+                                selected_date,
+                                selected_meal,
+                                working_items,
+                            )
+
+                st.divider()
+                st.markdown("#### 📄 Download Text Menu")
                 text = (
                     f"Date: {selected_date}\n"
                     f"Meal: {selected_meal}\n"
@@ -767,7 +1045,7 @@ with tab3:
             render_empty_state("No meals for this date.", "🍽️")
 
 # ---------------------------------------------------------------------
-# TAB 4: GLOBAL SEARCH
+# TAB 4: GLOBAL SEARCH (unchanged)
 # ---------------------------------------------------------------------
 with tab4:
     st.markdown("### 🔍 Global Search")
