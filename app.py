@@ -1,11 +1,12 @@
 """
 Main Streamlit Application - Tabu weds Mousumi
 Wedding Management System with Beautiful UI.
-Includes per-card Reset for ingredients and invitees.
+Includes per-card Reset for ingredients and invitees and enhanced metrics.
 """
 
 import os
 import time
+from typing import List, Dict, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -43,7 +44,6 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-
 # ---------------------------------------------------------------------
 # Database init (cached)
 # ---------------------------------------------------------------------
@@ -64,26 +64,25 @@ render_header()
 # CSV mappings (root-level files)
 # ---------------------------------------------------------------------
 csv_files_ingredients = {
-    "Local-List": "Local-List.csv",
-    "Reception-Raasan": "Reception-Raasan.csv",
-    "Reception-Tent": "Reception-Tent.csv",
-    "Reception-Extras": "Reception-Extras.csv",
-    "Reception-Pakoda": "Reception-Pakoda.csv",
-    "Reception-Coffee": "Reception-Coffee.csv",
-    "Home-Raasan": "Home-Raasan.csv",
-    "Home-Dessert": "Home-Dessert.csv",
-    "Home-Tent": "Home-Tent.csv",
+    "Local-List": "data/ingredients/Local-List.csv",
+    "Reception-Raasan": "data/ingredients/Reception-Raasan.csv",
+    "Reception-Tent": "data/ingredients/Reception-Tent.csv",
+    "Reception-Extras": "data/ingredients/Reception-Extras.csv",
+    "Reception-Pakoda": "data/ingredients/Reception-Pakoda.csv",
+    "Reception-Coffee": "data/ingredients/Reception-Coffee.csv",
+    "Home-Raasan": "data/ingredients/Home-Raasan.csv",
+    "Home-Dessert": "data/ingredients/Home-Dessert.csv",
+    "Home-Tent": "data/ingredients/Home-Tent.csv",
 }
 
 csv_files_invitees = {
-    "Invitee-List-Poite-03.12.25": "Invitee-List-Poite-03.12.25.csv",
-    "Invitee-List-Barati-05.12.25": "Invitee-List-Barati-05.12.25.csv",
-    "Invitee-List-Boubhaat-07.12.25": "Invitee-List-Boubhaat-07.12.25.csv",
-    "Invitee-List-Return-06.12.25": "Invitee-List-Return-06.12.25.csv",
+    "Invitee-List-Poite-03.12.25": "data/invitees/Invitee-List-Poite-03.12.25.csv",
+    "Invitee-List-Barati-05.12.25": "data/invitees/Invitee-List-Barati-05.12.25.csv",
+    "Invitee-List-Boubhaat-07.12.25": "data/invitees/Invitee-List-Boubhaat-07.12.25.csv",
+    "Invitee-List-Return-06.12.25": "data/invitees/Invitee-List-Return-06.12.25.csv",
 }
 
-menu_csv = "Menus-List.csv"
-
+menu_csv = "data/menus/Menus-List.csv"
 
 # ---------------------------------------------------------------------
 # One-time CSV -> DB load (cached)
@@ -126,6 +125,235 @@ def load_initial_data() -> None:
 load_initial_data()
 
 # ---------------------------------------------------------------------
+# Helper: menu parsing and categorisation
+# ---------------------------------------------------------------------
+VEG_KEYWORDS = [
+    "paneer",
+    "mushroom",
+    "veg",
+    "sabji",
+    "sabji",
+    "dal",
+    "daal",
+    "bhaat",
+    "rice",
+    "saag",
+    "kophi",
+    "gobi",
+    "gobi",
+    "chutney",
+    "salad",
+    "upma",
+    "luchi",
+    "puri",
+    "puri",
+    "roti",
+    "jeera rice",
+    "palak",
+    "mix veg",
+    "gulab jamun",
+    "paayesh",
+    "halwa",
+    "rosogolla",
+    "ice cream",
+    "jalebi",
+    "dahi vada",
+    "manchurian",
+    "papdi chat",
+    "veg cutlet",
+    "snacks",
+    "desserts",
+]
+NONVEG_KEYWORDS = [
+    "chicken",
+    "fish",
+    "macher",
+    "maacher",
+    "egg",
+    "mutton",
+    "pakoda",
+]
+
+
+def split_menu_items(raw: str) -> List[str]:
+    """Split the raw menu text into individual items."""
+    if not raw:
+        return []
+    # Split on commas and newlines
+    parts: List[str] = []
+    for line in str(raw).splitlines():
+        for piece in line.split(","):
+            item = piece.strip()
+            if item:
+                parts.append(item)
+    return parts
+
+
+def detect_veg_flag(item: str) -> str:
+    """Return 'veg' or 'non-veg' based on keywords in the item name."""
+    name = item.lower()
+    if any(k in name for k in NONVEG_KEYWORDS):
+        return "non-veg"
+    if any(k in name for k in VEG_KEYWORDS):
+        return "veg"
+    # default to veg for safety in a wedding context
+    return "veg"
+
+
+def classify_menu_item(item: str) -> str:
+    """Classify item into Main course, Sabjis, Starters, Breads, Desserts, Sides."""
+    name = item.lower()
+
+    # Desserts
+    if any(k in name for k in ["jalebi", "halwa", "rosogolla", "ice cream", "payesh", "paayesh", "dessert"]):
+        return "Desserts"
+
+    # Starters / Snacks
+    if any(
+        k in name
+        for k in [
+            "snacks",
+            "chowmein",
+            "manchurian",
+            "pakoda",
+            "pani puri",
+            "papdi chat",
+            "cutlet",
+            "starter",
+        ]
+    ):
+        return "Starters"
+
+    # Sides
+    if any(
+        k in name
+        for k in [
+            "salad",
+            "chutney",
+            "papad",
+            "dahi vada",
+            "dahi vadaa",
+            "fruit",
+            "sides",
+        ]
+    ):
+        return "Sides"
+
+    # Breads
+    if any(k in name for k in ["roti", "puri", "palak puri", "palak puri", "bread"]):
+        return "Breads"
+
+    # Main course (non-veg & main gravies, rice)
+    if any(k in name for k in ["chicken", "fish", "macher", "maacher", "rice", "jeera rice", "kofta", "matar paneer", "dal fry"]):
+        return "Main course"
+
+    # Sabjis (veg curries)
+    return "Sabjis"
+
+
+def build_menu_structure(raw: str) -> Dict[str, List[Dict[str, str]]]:
+    """
+    Turn raw menu text into a dict:
+    {category: [{name, veg_flag}]}
+    """
+    items = split_menu_items(raw)
+    menu_struct: Dict[str, List[Dict[str, str]]] = {
+        "Main course": [],
+        "Sabjis": [],
+        "Starters": [],
+        "Breads": [],
+        "Desserts": [],
+        "Sides": [],
+    }
+    for item in items:
+        category = classify_menu_item(item)
+        veg_flag = detect_veg_flag(item)
+        menu_struct.setdefault(category, []).append(
+            {"name": item, "veg_flag": veg_flag}
+        )
+    return menu_struct
+
+
+def render_menu_item_row(
+    category: str,
+    idx: int,
+    item: Dict[str, str],
+    date: str,
+    meal: str,
+    menu_items_list: List[str],
+) -> None:
+    """Render a single menu item row with veg/non-veg icon and edit/delete."""
+    icon = "🟢" if item["veg_flag"] == "veg" else "🔴"
+    label = f"{icon} {item['name']}"
+
+    col1, col2, col3 = st.columns([6, 1, 1])
+
+    with col1:
+        st.write(label)
+
+    # Edit name
+    edit_key = f"edit_menu_{category}_{idx}_{date}_{meal}"
+    new_name_key = f"edit_menu_name_{category}_{idx}_{date}_{meal}"
+
+    with col2:
+        if st.button("✏️", key=f"btn_edit_{category}_{idx}_{date}_{meal}", help="Edit item name"):
+            st.session_state[edit_key] = True
+
+    with col3:
+        if st.button("🗑️", key=f"btn_del_{category}_{idx}_{date}_{meal}", help="Delete item"):
+            # Remove this item from the list and update DB
+            original = item["name"]
+            menu_items_list[:] = [x for x in menu_items_list if x != original]
+            updated_raw = ", ".join(menu_items_list)
+            conn = db.get_connection()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE menus
+                SET menu_items = ?
+                WHERE date = ? AND meal = ?
+                """,
+                (updated_raw, date, meal),
+            )
+            conn.commit()
+            conn.close()
+            st.rerun()
+
+    # Inline edit form
+    if st.session_state.get(edit_key):
+        ec1, ec2 = st.columns([4, 1])
+        with ec1:
+            new_name = st.text_input(
+                "New name",
+                value=item["name"],
+                key=new_name_key,
+            )
+        with ec2:
+            if st.button("Save", key=f"btn_save_{category}_{idx}_{date}_{meal}"):
+                original = item["name"]
+                # Replace first occurrence
+                for i, v in enumerate(menu_items_list):
+                    if v == original:
+                        menu_items_list[i] = new_name
+                        break
+                updated_raw = ", ".join(menu_items_list)
+                conn = db.get_connection()
+                cur = conn.cursor()
+                cur.execute(
+                    """
+                    UPDATE menus
+                    SET menu_items = ?
+                    WHERE date = ? AND meal = ?
+                    """,
+                    (updated_raw, date, meal),
+                )
+                conn.commit()
+                conn.close()
+                st.session_state[edit_key] = False
+                st.rerun()
+
+
+# ---------------------------------------------------------------------
 # Tabs
 # ---------------------------------------------------------------------
 tab1, tab2, tab3, tab4 = st.tabs(
@@ -134,6 +362,7 @@ tab1, tab2, tab3, tab4 = st.tabs(
 
 # ---------------------------------------------------------------------
 # TAB 1: INGREDIENTS
+# (unchanged; your latest enhanced version)
 # ---------------------------------------------------------------------
 with tab1:
     st.markdown("### 📦 Ingredient Delivery Tracking")
@@ -155,20 +384,35 @@ with tab1:
         ingredients = db.get_ingredients(selected_list)
 
         if ingredients:
-            # Summary
+            # Summary metrics (counts)
+            total_items = len(ingredients)
+            completed_items = [i for i in ingredients if i["status"] == "Completed"]
+            incomplete_items = [i for i in ingredients if i["status"] == "Incomplete"]
+
             s1, s2, s3 = st.columns(3)
             with s1:
-                render_metric_box("Total Items", str(len(ingredients)), "📊")
+                render_metric_box("Total Items", str(total_items), "📊")
             with s2:
-                completed = sum(1 for i in ingredients if i["status"] == "Completed")
-                render_metric_box("Completed", str(completed), "✅")
+                render_metric_box("Completed Items", str(len(completed_items)), "✅")
             with s3:
-                incomplete = sum(1 for i in ingredients if i["status"] == "Incomplete")
-                render_metric_box("Incomplete", str(incomplete), "⚠️")
+                render_metric_box("Incomplete Items", str(len(incomplete_items)), "⚠️")
+
+            total_qty = sum(float(i["quantity"]) for i in ingredients)
+            total_incomplete_qty = sum(
+                float(i.get("delivered_quantity") or 0.0) for i in incomplete_items
+            )
+            total_complete_qty = total_qty - total_incomplete_qty
+
+            q1, q2, q3 = st.columns(3)
+            with q1:
+                render_metric_box("Total Quantity", str(total_qty), "📦")
+            with q2:
+                render_metric_box("Completed Qty", str(total_complete_qty), "✅")
+            with q3:
+                render_metric_box("Incomplete Qty", str(total_incomplete_qty), "⚠️")
 
             st.divider()
 
-            # Local search
             sc1, sc2 = st.columns([3, 1])
             with sc1:
                 search_term = st.text_input(
@@ -190,101 +434,154 @@ with tab1:
                 filtered = ingredients
 
             if filtered:
-                for idx, ing in enumerate(filtered):
-                    with st.container():
-                        col1, col2, col3, col4, col5, col6 = st.columns(
-                            [2, 1.6, 1, 1.6, 1, 0.7]
-                        )
+                incomplete_filtered = [
+                    i for i in filtered if i["status"] == "Incomplete"
+                ]
+                completed_filtered = [i for i in filtered if i["status"] == "Completed"]
+                other_filtered = [
+                    i
+                    for i in filtered
+                    if i["status"] not in ("Incomplete", "Completed")
+                ]
 
-                        # Name
-                        with col1:
-                            st.write(f"**{ing['item_name']}**")
-
-                        # Quantity
-                        with col2:
-                            st.write(
-                                format_quantity_display(ing["quantity"], ing["unit"])
+                def render_ingredient_cards(items, section_key_prefix: str):
+                    for idx, ing in enumerate(items):
+                        row_key = f"{section_key_prefix}_{idx}_{selected_list}"
+                        with st.container():
+                            col1, col2, col3, col4, col5, col6, col7 = st.columns(
+                                [2.2, 1.4, 1.2, 1.6, 1.2, 1.2, 0.7]
                             )
 
-                        # Status badge
-                        with col3:
-                            st.markdown(
-                                render_status_badge(ing["status"]),
-                                unsafe_allow_html=True,
-                            )
+                            with col1:
+                                st.write(f"**{ing['item_name']}**")
 
-                        # Complete / Incomplete
-                        with col4:
-                            b1, b2 = st.columns(2)
-                            with b1:
-                                if st.button(
-                                    "✓",
-                                    key=f"complete_{idx}_{selected_list}",
-                                    help="Mark complete",
-                                ):
-                                    db.update_ingredient_status(
-                                        selected_list,
-                                        ing["item_name"],
-                                        "Completed",
-                                        0.0,
+                            with col2:
+                                st.write(
+                                    format_quantity_display(
+                                        ing["quantity"], ing["unit"]
                                     )
-                                    st.rerun()
-                            with b2:
+                                )
+
+                            with col3:
+                                st.markdown(
+                                    render_status_badge(ing["status"]),
+                                    unsafe_allow_html=True,
+                                )
+
+                            with col4:
+                                b1, b2 = st.columns(2)
+                                with b1:
+                                    if st.button(
+                                        "✓",
+                                        key=f"complete_{row_key}",
+                                        help="Mark complete",
+                                    ):
+                                        db.update_ingredient_status(
+                                            selected_list,
+                                            ing["item_name"],
+                                            "Completed",
+                                            0.0,
+                                        )
+                                        st.rerun()
+                                with b2:
+                                    if st.button(
+                                        "✗",
+                                        key=f"incomplete_{row_key}",
+                                        help="Mark incomplete",
+                                    ):
+                                        st.session_state[
+                                            f"enter_qty_{row_key}"
+                                        ] = True
+
+                            with col5:
                                 if st.button(
-                                    "✗",
-                                    key=f"incomplete_{idx}_{selected_list}",
-                                    help="Mark incomplete",
+                                    "Edit Qty",
+                                    key=f"edit_qty_btn_{row_key}",
+                                    help="Update item quantity",
                                 ):
-                                    st.session_state[f"enter_qty_{idx}_{selected_list}"] = (
-                                        True
-                                    )
-
-                        # Reset button
-                        with col5:
-                            if st.button(
-                                "Reset",
-                                key=f"reset_{idx}_{selected_list}",
-                                help="Reset to original quantity",
-                            ):
-                                db.reset_ingredient(selected_list, ing["item_name"])
-                                st.rerun()
-
-                        # Placeholder
-                        with col6:
-                            pass
-
-                        # Incomplete -> ask remaining qty
-                        if st.session_state.get(
-                            f"enter_qty_{idx}_{selected_list}", False
-                        ):
-                            q = st.number_input(
-                                f"Quantity not delivered for {ing['item_name']}",
-                                min_value=0.0,
-                                max_value=float(ing["quantity"]),
-                                key=f"qty_input_{idx}_{selected_list}",
-                            )
-                            save_col1, save_col2 = st.columns([1, 3])
-                            with save_col1:
-                                if st.button(
-                                    "Save",
-                                    key=f"save_qty_{idx}_{selected_list}",
-                                ):
-                                    db.update_ingredient_status(
-                                        selected_list,
-                                        ing["item_name"],
-                                        "Incomplete",
-                                        q,
-                                    )
                                     st.session_state[
-                                        f"enter_qty_{idx}_{selected_list}"
-                                    ] = False
+                                        f"edit_qty_{row_key}"
+                                    ] = True
+
+                            with col6:
+                                if st.button(
+                                    "Reset",
+                                    key=f"reset_{row_key}",
+                                    help="Reset to original quantity & status",
+                                ):
+                                    db.reset_ingredient(selected_list, ing["item_name"])
                                     st.rerun()
 
-                        st.divider()
+                            with col7:
+                                pass
+
+                            if st.session_state.get(
+                                f"enter_qty_{row_key}", False
+                            ):
+                                q = st.number_input(
+                                    f"Quantity not delivered for {ing['item_name']}",
+                                    min_value=0.0,
+                                    max_value=float(ing["quantity"]),
+                                    key=f"qty_input_{row_key}",
+                                )
+                                s1c, s2c = st.columns([1, 3])
+                                with s1c:
+                                    if st.button(
+                                        "Save",
+                                        key=f"save_incomplete_{row_key}",
+                                    ):
+                                        db.update_ingredient_status(
+                                            selected_list,
+                                            ing["item_name"],
+                                            "Incomplete",
+                                            q,
+                                        )
+                                        st.session_state[
+                                            f"enter_qty_{row_key}"
+                                        ] = False
+                                        st.rerun()
+
+                            if st.session_state.get(
+                                f"edit_qty_{row_key}", False
+                            ):
+                                new_q_col1, new_q_col2 = st.columns([2, 1])
+                                with new_q_col1:
+                                    new_qty_val = st.number_input(
+                                        f"New quantity for {ing['item_name']}",
+                                        min_value=0.0,
+                                        value=float(ing["quantity"]),
+                                        key=f"new_qty_val_{row_key}",
+                                    )
+                                with new_q_col2:
+                                    if st.button(
+                                        "Update",
+                                        key=f"update_qty_{row_key}",
+                                    ):
+                                        db.update_ingredient(
+                                            selected_list,
+                                            ing["item_name"],
+                                            new_qty_val,
+                                            ing["unit"],
+                                        )
+                                        st.session_state[
+                                            f"edit_qty_{row_key}"
+                                        ] = False
+                                        st.rerun()
+
+                            st.divider()
+
+                if incomplete_filtered:
+                    st.markdown("#### ⚠️ Incomplete Items")
+                    render_ingredient_cards(incomplete_filtered, "inc")
+                if completed_filtered:
+                    st.markdown("#### ✅ Completed Items")
+                    render_ingredient_cards(completed_filtered, "comp")
+                if other_filtered:
+                    st.markdown("#### 📦 Other Items")
+                    render_ingredient_cards(other_filtered, "other")
             else:
                 render_empty_state("No ingredients found", "🔍")
 
-            # Add new ingredient
             st.markdown("#### ➕ Add New Ingredient")
             a1, a2, a3, a4 = st.columns([2, 1.5, 1, 1])
             with a1:
@@ -305,7 +602,10 @@ with tab1:
                     )
                     if ok:
                         if db.add_ingredient(
-                            selected_list, new_name, float(new_qty), new_unit
+                            selected_list,
+                            new_name,
+                            float(new_qty),
+                            new_unit,
                         ):
                             render_alert("Ingredient added.", "success")
                             st.rerun()
@@ -318,6 +618,7 @@ with tab1:
 
 # ---------------------------------------------------------------------
 # TAB 2: INVITEES
+# (unchanged from your latest version)
 # ---------------------------------------------------------------------
 with tab2:
     st.markdown("### 👥 Invitee Management")
@@ -339,19 +640,15 @@ with tab2:
         invitees = db.get_invitees(selected_inv_list)
         total_headcount = db.get_total_headcount(selected_inv_list)
 
-        # Detect Barati list
         is_barati = (
             "Barati" in selected_inv_list
             or "Barati" in INVITEE_LISTS.get(selected_inv_list, "")
         )
 
         if is_barati:
-            # --- Extra stats for Barati ---
-            # Total people going to Sakti = sum(to_sakti)
             total_to_sakti = sum(int(g.get("to_sakti") or 0) for g in invitees)
 
-            # Only those going to Sakti are considered for bus/car
-            def _travel(v):
+            def _travel(v: str) -> str:
                 return (v or "").strip().lower()
 
             bus_headcount = sum(
@@ -379,7 +676,6 @@ with tab2:
                     "🚌",
                 )
         else:
-            # Non-Barati lists: simpler metrics
             s1, s2, s3 = st.columns(3)
             with s1:
                 render_metric_box("Total Guests", str(len(invitees)), "👥")
@@ -390,7 +686,6 @@ with tab2:
 
         st.divider()
 
-        # Local search
         sc1, sc2 = st.columns([3, 1])
         with sc1:
             inv_search = st.text_input(
@@ -398,7 +693,9 @@ with tab2:
             )
         with sc2:
             st.write("")
-            if st.button("Clear", key=f"clear_invitee_search_{selected_inv_list}"):
+            if st.button(
+                "Clear", key=f"clear_invitee_search_{selected_inv_list}"
+            ):
                 inv_search = ""
                 st.session_state[f"invitee_search_{selected_inv_list}"] = ""
 
@@ -417,15 +714,11 @@ with tab2:
             for idx, guest in enumerate(filtered_inv):
                 with st.container():
                     if is_barati:
-                        # Barati card layout: name, lunch ±, Sakti ±, travel, reset
                         col1, col2, col3, col4, col5, col6, col7 = st.columns(
                             [2, 0.7, 0.7, 0.9, 1.8, 1.2, 0.9]
                         )
-
                         with col1:
                             st.write(f"**{guest['name']}**")
-
-                        # Lunch - / count / +
                         with col2:
                             if st.button(
                                 "➖",
@@ -456,7 +749,6 @@ with tab2:
                                 )
                                 st.rerun()
 
-                        # Sakti - / label / +
                         current_sakti = int(guest.get("to_sakti") or 0)
                         with col5:
                             s1c, s2c, s3c = st.columns([0.8, 1.2, 0.8])
@@ -493,7 +785,6 @@ with tab2:
                                         )
                                         st.rerun()
 
-                        # Travel by (Bus / Car / etc.)
                         with col6:
                             travel = st.selectbox(
                                 "Travel",
@@ -515,7 +806,6 @@ with tab2:
                                 )
                                 st.rerun()
 
-                        # Reset guest (lunch -> original_lunch)
                         with col7:
                             if st.button(
                                 "Reset",
@@ -524,7 +814,6 @@ with tab2:
                                 db.reset_invitee(selected_inv_list, guest["name"])
                                 st.rerun()
                     else:
-                        # Non-Barati guest layout
                         col1, col2, col3, col4, col5 = st.columns(
                             [2, 0.7, 0.7, 0.9, 0.9]
                         )
@@ -563,11 +852,10 @@ with tab2:
                                 db.reset_invitee(selected_inv_list, guest["name"])
                                 st.rerun()
 
-                    st.divider()
+                st.divider()
         else:
             render_empty_state("No guests found", "🔍")
 
-        # Add new guest
         st.markdown("#### ➕ Add New Guest")
         a1, a2, a3 = st.columns([2, 1, 1])
         with a1:
@@ -587,20 +875,16 @@ with tab2:
                 if not ok:
                     render_alert(msg, "error")
                 else:
-                    if (
-                        "Barati" in selected_inv_list
-                        or "Barati" in INVITEE_LISTS.get(selected_inv_list, "")
-                    ):
-                        # For Barati, also capture initial Sakti + travel
-                        s1, s2 = st.columns(2)
-                        with s1:
+                    if is_barati:
+                        s1c, s2c = st.columns(2)
+                        with s1c:
                             to_sakti = st.number_input(
                                 "To Sakti",
                                 min_value=0,
                                 max_value=int(new_lunch),
                                 key=f"new_sakti_{selected_inv_list}",
                             )
-                        with s2:
+                        with s2c:
                             travel = st.selectbox(
                                 "Travel",
                                 TRAVEL_OPTIONS,
@@ -627,7 +911,7 @@ with tab2:
                             render_alert("Guest already exists.", "error")
 
 # ---------------------------------------------------------------------
-# TAB 3: MENU
+# TAB 3: MENU (updated, pretty, editable)
 # ---------------------------------------------------------------------
 with tab3:
     st.markdown("### 🍽️ Menu Planning & Details")
@@ -665,17 +949,37 @@ with tab3:
                     )
 
                 st.divider()
-                st.markdown("#### 📋 Menu Items")
-                st.markdown(
-                    f"""
-                    <div style="background:#fdf5e6;padding:20px;border-radius:10px;
-                                border-left:4px solid #d4af37;">
-                        {menu_row['menu_items']}
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                st.markdown("#### 📋 Menu Items (Beautiful View)")
 
+                raw_menu_text = menu_row["menu_items"]
+                # Keep a working list of items for edit/delete
+                working_items = split_menu_items(raw_menu_text)
+                structured_menu = build_menu_structure(raw_menu_text)
+
+                for category in [
+                    "Main course",
+                    "Sabjis",
+                    "Starters",
+                    "Breads",
+                    "Desserts",
+                    "Sides",
+                ]:
+                    items = structured_menu.get(category, [])
+                    if not items:
+                        continue
+                    with st.expander(f"{category} ({len(items)})", expanded=True):
+                        for idx, item in enumerate(items):
+                            render_menu_item_row(
+                                category,
+                                idx,
+                                item,
+                                selected_date,
+                                selected_meal,
+                                working_items,
+                            )
+
+                st.divider()
+                st.markdown("#### 📄 Download Text Menu")
                 text = (
                     f"Date: {selected_date}\n"
                     f"Meal: {selected_meal}\n"
@@ -692,6 +996,7 @@ with tab3:
 
 # ---------------------------------------------------------------------
 # TAB 4: GLOBAL SEARCH
+# (unchanged)
 # ---------------------------------------------------------------------
 with tab4:
     st.markdown("### 🔍 Global Search")

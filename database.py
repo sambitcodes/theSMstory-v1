@@ -1,5 +1,6 @@
 """
 Database module for Tabu weds Mousumi application
+
 Handles all SQLite database operations for ingredients, invitees and menus.
 Optimised for Streamlit Cloud (WAL, timeouts, retries) and supports per-row reset.
 """
@@ -24,27 +25,17 @@ class WeddingDatabase:
     # ---------------------------------------------------------------------
     def get_connection(self) -> sqlite3.Connection:
         """Get database connection with proper timeout and isolation."""
-        try:
-            conn = sqlite3.connect(
-                self.db_path,
-                timeout=DB_TIMEOUT,
-                check_same_thread=False,
-            )
-            conn.row_factory = sqlite3.Row
-            # WAL mode reduces locking issues on Streamlit Cloud
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA cache_size=10000")
-            return conn
-        except sqlite3.OperationalError:
-            time.sleep(0.1)
-            conn = sqlite3.connect(
-                self.db_path,
-                timeout=DB_TIMEOUT,
-                check_same_thread=False,
-            )
-            conn.row_factory = sqlite3.Row
-            return conn
+        conn = sqlite3.connect(
+            self.db_path,
+            timeout=DB_TIMEOUT,
+            check_same_thread=False,
+        )
+        conn.row_factory = sqlite3.Row
+        # WAL mode reduces locking issues on Streamlit Cloud
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=10000")
+        return conn
 
     def init_database(self) -> None:
         """Initialize database tables (idempotent)."""
@@ -85,6 +76,8 @@ class WeddingDatabase:
                         to_sakti INTEGER,
                         travel_by TEXT,
                         original_lunch INTEGER NOT NULL,
+                        original_to_sakti INTEGER,
+                        original_travel_by TEXT,
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                         UNIQUE(list_name, name)
                     )
@@ -139,8 +132,10 @@ class WeddingDatabase:
                             qty_raw = row.get("Quantity", None)
                             unit_raw = row.get("Unit", None)
 
-                            if pd.isna(name_raw) or pd.isna(qty_raw) or pd.isna(
-                                unit_raw
+                            if (
+                                pd.isna(name_raw)
+                                or pd.isna(qty_raw)
+                                or pd.isna(unit_raw)
                             ):
                                 continue
 
@@ -380,7 +375,7 @@ class WeddingDatabase:
                                 or name.lower().endswith("total")
                             ):
                                 # skip header / summary line like '117 Total'
-                                continue  # [attached_file:11]
+                                continue
 
                             lunch = int(lunch_raw)
 
@@ -391,17 +386,26 @@ class WeddingDatabase:
                                 to_sakti = int(val) if pd.notna(val) else None
                             if "Travel By" in row.index:
                                 val = row["Travel By"]
-                                travel_by = (
-                                    str(val).strip() if pd.notna(val) else None
-                                )
+                                travel_by = str(val).strip() if pd.notna(val) else None
 
                             cursor.execute(
                                 """
                                 INSERT INTO invitees
-                                (list_name, name, lunch, to_sakti, travel_by, original_lunch)
-                                VALUES (?, ?, ?, ?, ?, ?)
+                                (list_name, name, lunch,
+                                 to_sakti, travel_by,
+                                 original_lunch, original_to_sakti, original_travel_by)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                                 """,
-                                (list_name, name, lunch, to_sakti, travel_by, lunch),
+                                (
+                                    list_name,
+                                    name,
+                                    lunch,
+                                    to_sakti,
+                                    travel_by,
+                                    lunch,
+                                    to_sakti,
+                                    travel_by,
+                                ),
                             )
                         except (ValueError, sqlite3.IntegrityError, KeyError):
                             continue
@@ -445,17 +449,28 @@ class WeddingDatabase:
         to_sakti: Optional[int] = None,
         travel_by: Optional[str] = None,
     ) -> bool:
-        """Add new invitee with original_lunch set to first lunch value."""
+        """Add new invitee with original_* set to first values."""
         try:
             conn = self.get_connection()
             cur = conn.cursor()
             cur.execute(
                 """
                 INSERT INTO invitees
-                (list_name, name, lunch, to_sakti, travel_by, original_lunch)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (list_name, name, lunch,
+                 to_sakti, travel_by,
+                 original_lunch, original_to_sakti, original_travel_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (list_name, name, lunch, to_sakti, travel_by, lunch),
+                (
+                    list_name,
+                    name,
+                    lunch,
+                    to_sakti,
+                    travel_by,
+                    lunch,
+                    to_sakti,
+                    travel_by,
+                ),
             )
             conn.commit()
             conn.close()
@@ -474,7 +489,7 @@ class WeddingDatabase:
         to_sakti: Optional[int] = None,
         travel_by: Optional[str] = None,
     ) -> None:
-        """Update invitee info; original_lunch stays unchanged."""
+        """Update invitee info; original_* stay unchanged."""
         try:
             conn = self.get_connection()
             cur = conn.cursor()
@@ -521,14 +536,21 @@ class WeddingDatabase:
             return False
 
     def reset_invitee(self, list_name: str, name: str) -> None:
-        """Reset invitee lunch to original_lunch."""
+        """
+        Reset invitee:
+        - lunch -> original_lunch
+        - to_sakti -> original_to_sakti (or 0 if NULL)
+        - travel_by -> original_travel_by
+        """
         try:
             conn = self.get_connection()
             cur = conn.cursor()
             cur.execute(
                 """
                 UPDATE invitees
-                SET lunch = original_lunch
+                SET lunch = original_lunch,
+                    to_sakti = COALESCE(original_to_sakti, 0),
+                    travel_by = original_travel_by
                 WHERE list_name = ? AND name = ?
                 """,
                 (list_name, name),

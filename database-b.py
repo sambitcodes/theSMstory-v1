@@ -1,50 +1,55 @@
 """
 Database module for Tabu weds Mousumi application
-Handles all SQLite database operations for ingredients and invitees
-Fixed for Streamlit Cloud with proper connection handling
+
+Handles all SQLite database operations for ingredients, invitees and menus.
+Optimised for Streamlit Cloud (WAL, timeouts, retries) and supports per-row reset.
 """
 
 import sqlite3
 import pandas as pd
-from typing import List, Dict, Tuple, Optional
-import os
+from typing import List, Dict, Optional
 import time
-from config import DB_NAME, DB_TIMEOUT, INGREDIENT_LISTS, INVITEE_LISTS
+
+from config import DB_NAME, DB_TIMEOUT
+
 
 class WeddingDatabase:
     """Main database class for managing wedding data with thread-safe operations"""
-    
+
     def __init__(self, db_path: str = DB_NAME):
         self.db_path = db_path
         self.init_database()
-    
+
+    # ---------------------------------------------------------------------
+    # Core connection helpers
+    # ---------------------------------------------------------------------
     def get_connection(self) -> sqlite3.Connection:
-        """Get database connection with proper timeout and isolation"""
-        try:
-            conn = sqlite3.connect(self.db_path, timeout=DB_TIMEOUT, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            # Enable WAL mode to prevent locking issues
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA cache_size=10000")
-            return conn
-        except sqlite3.OperationalError as e:
-            # Retry on lock
-            time.sleep(0.1)
-            return sqlite3.connect(self.db_path, timeout=DB_TIMEOUT, check_same_thread=False)
-    
-    def init_database(self):
-        """Initialize database tables"""
+        """Get database connection with proper timeout and isolation."""
+        conn = sqlite3.connect(
+            self.db_path,
+            timeout=DB_TIMEOUT,
+            check_same_thread=False,
+        )
+        conn.row_factory = sqlite3.Row
+        # WAL mode reduces locking issues on Streamlit Cloud
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=10000")
+        return conn
+
+    def init_database(self) -> None:
+        """Initialize database tables (idempotent)."""
         retry_count = 0
         max_retries = 3
-        
+
         while retry_count < max_retries:
             try:
                 conn = self.get_connection()
                 cursor = conn.cursor()
-                
+
                 # Ingredients table
-                cursor.execute('''
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS ingredients (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         list_name TEXT NOT NULL,
@@ -53,13 +58,16 @@ class WeddingDatabase:
                         unit TEXT NOT NULL,
                         delivered_quantity REAL DEFAULT 0,
                         status TEXT DEFAULT 'Not Started',
+                        original_quantity REAL NOT NULL,
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                         UNIQUE(list_name, item_name)
                     )
-                ''')
-                
+                    """
+                )
+
                 # Invitees table
-                cursor.execute('''
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS invitees (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         list_name TEXT NOT NULL,
@@ -67,13 +75,18 @@ class WeddingDatabase:
                         lunch INTEGER NOT NULL,
                         to_sakti INTEGER,
                         travel_by TEXT,
+                        original_lunch INTEGER NOT NULL,
+                        original_to_sakti INTEGER,
+                        original_travel_by TEXT,
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                         UNIQUE(list_name, name)
                     )
-                ''')
-                
-                # Menu items table
-                cursor.execute('''
+                    """
+                )
+
+                # Menus table
+                cursor.execute(
+                    """
                     CREATE TABLE IF NOT EXISTS menus (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         date TEXT NOT NULL,
@@ -83,43 +96,68 @@ class WeddingDatabase:
                         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                         UNIQUE(date, meal)
                     )
-                ''')
-                
+                    """
+                )
+
                 conn.commit()
                 conn.close()
                 break
             except sqlite3.OperationalError as e:
                 retry_count += 1
-                if retry_count < max_retries:
-                    time.sleep(0.2)
-                else:
+                if retry_count >= max_retries:
                     print(f"Database initialization error: {e}")
-    
-    # ============== INGREDIENT OPERATIONS ==============
-    
+                else:
+                    time.sleep(0.2)
+
+    # ---------------------------------------------------------------------
+    # INGREDIENT OPERATIONS
+    # ---------------------------------------------------------------------
     def load_ingredient_list(self, list_name: str, df: pd.DataFrame) -> bool:
-        """Load ingredient list from CSV to database"""
+        """Load ingredient list from CSV into database, replacing that list."""
         try:
             retry_count = 0
             while retry_count < 3:
                 try:
                     conn = self.get_connection()
                     cursor = conn.cursor()
-                    
-                    # Clear existing list
-                    cursor.execute('DELETE FROM ingredients WHERE list_name = ?', (list_name,))
-                    
-                    # Insert new data
+
+                    cursor.execute(
+                        "DELETE FROM ingredients WHERE list_name = ?",
+                        (list_name,),
+                    )
+
                     for _, row in df.iterrows():
                         try:
-                            cursor.execute('''
-                                INSERT INTO ingredients 
-                                (list_name, item_name, quantity, unit, delivered_quantity, status)
-                                VALUES (?, ?, ?, ?, 0, 'Not Started')
-                            ''', (list_name, str(row['Item Name']), float(row['Quantity']), str(row['Unit'])))
-                        except (KeyError, ValueError, sqlite3.IntegrityError) as e:
+                            name_raw = row.get("Item Name", None)
+                            qty_raw = row.get("Quantity", None)
+                            unit_raw = row.get("Unit", None)
+
+                            if (
+                                pd.isna(name_raw)
+                                or pd.isna(qty_raw)
+                                or pd.isna(unit_raw)
+                            ):
+                                continue
+
+                            item_name = str(name_raw).strip()
+                            if not item_name:
+                                continue
+
+                            quantity = float(qty_raw)
+                            unit = str(unit_raw).strip()
+
+                            cursor.execute(
+                                """
+                                INSERT INTO ingredients
+                                (list_name, item_name, quantity, unit,
+                                 delivered_quantity, status, original_quantity)
+                                VALUES (?, ?, ?, ?, 0, 'Not Started', ?)
+                                """,
+                                (list_name, item_name, quantity, unit, quantity),
+                            )
+                        except (ValueError, sqlite3.IntegrityError, KeyError):
                             continue
-                    
+
                     conn.commit()
                     conn.close()
                     return True
@@ -130,55 +168,71 @@ class WeddingDatabase:
         except Exception as e:
             print(f"Error loading ingredient list: {e}")
             return False
-    
+
     def get_ingredients(self, list_name: str) -> List[Dict]:
-        """Get all ingredients from a list"""
+        """Get all ingredients for a list."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT * FROM ingredients WHERE list_name = ? ORDER BY item_name
-            ''', (list_name,))
-            
-            ingredients = [dict(row) for row in cursor.fetchall()]
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT * FROM ingredients
+                WHERE list_name = ?
+                ORDER BY item_name
+                """,
+                (list_name,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
             conn.close()
-            return ingredients
+            return rows
         except Exception as e:
             print(f"Error getting ingredients: {e}")
             return []
-    
-    def update_ingredient_status(self, list_name: str, item_name: str, 
-                                status: str, delivered_qty: float = 0):
-        """Update ingredient delivery status"""
+
+    def update_ingredient_status(
+        self,
+        list_name: str,
+        item_name: str,
+        status: str,
+        delivered_qty: float = 0.0,
+    ) -> None:
+        """Update ingredient status and delivered quantity."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                UPDATE ingredients 
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE ingredients
                 SET status = ?, delivered_quantity = ?
                 WHERE list_name = ? AND item_name = ?
-            ''', (status, delivered_qty, list_name, item_name))
-            
+                """,
+                (status, delivered_qty, list_name, item_name),
+            )
             conn.commit()
             conn.close()
         except Exception as e:
             print(f"Error updating ingredient status: {e}")
-    
-    def add_ingredient(self, list_name: str, item_name: str, 
-                      quantity: float, unit: str):
-        """Add new ingredient to list"""
+
+    def add_ingredient(
+        self,
+        list_name: str,
+        item_name: str,
+        quantity: float,
+        unit: str,
+    ) -> bool:
+        """Add new ingredient, with original_quantity set to first value."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                INSERT INTO ingredients 
-                (list_name, item_name, quantity, unit, status)
-                VALUES (?, ?, ?, ?, 'Not Started')
-            ''', (list_name, item_name, quantity, unit))
-            
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO ingredients
+                (list_name, item_name, quantity, unit,
+                 delivered_quantity, status, original_quantity)
+                VALUES (?, ?, ?, ?, 0, 'Not Started', ?)
+                """,
+                (list_name, item_name, quantity, unit, quantity),
+            )
             conn.commit()
             conn.close()
             return True
@@ -187,106 +241,175 @@ class WeddingDatabase:
         except Exception as e:
             print(f"Error adding ingredient: {e}")
             return False
-    
-    def update_ingredient(self, list_name: str, item_name: str, 
-                         quantity: float, unit: str):
-        """Update ingredient quantity"""
+
+    def update_ingredient(
+        self,
+        list_name: str,
+        item_name: str,
+        quantity: float,
+        unit: str,
+    ) -> None:
+        """Update quantity/unit, leaving original_quantity unchanged."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                UPDATE ingredients 
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE ingredients
                 SET quantity = ?, unit = ?
                 WHERE list_name = ? AND item_name = ?
-            ''', (quantity, unit, list_name, item_name))
-            
+                """,
+                (quantity, unit, list_name, item_name),
+            )
             conn.commit()
             conn.close()
         except Exception as e:
             print(f"Error updating ingredient: {e}")
-    
+
     def delete_ingredient(self, list_name: str, item_name: str) -> bool:
-        """Delete ingredient from list"""
+        """Delete ingredient from list."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                DELETE FROM ingredients 
+            cur = conn.cursor()
+            cur.execute(
+                """
+                DELETE FROM ingredients
                 WHERE list_name = ? AND item_name = ?
-            ''', (list_name, item_name))
-            
+                """,
+                (list_name, item_name),
+            )
             conn.commit()
             conn.close()
             return True
         except Exception as e:
             print(f"Error deleting ingredient: {e}")
             return False
-    
-    def search_ingredients(self, search_term: str, list_name: Optional[str] = None) -> List[Dict]:
-        """Search for ingredients across lists"""
+
+    def reset_ingredient(self, list_name: str, item_name: str) -> None:
+        """Reset one ingredient to its original quantity and clear status."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            search_pattern = f"%{search_term}%"
-            
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE ingredients
+                SET quantity = original_quantity,
+                    delivered_quantity = 0,
+                    status = 'Not Started'
+                WHERE list_name = ? AND item_name = ?
+                """,
+                (list_name, item_name),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            print(f"Error resetting ingredient: {e}")
+
+    def search_ingredients(
+        self,
+        search_term: str,
+        list_name: Optional[str] = None,
+    ) -> List[Dict]:
+        """Search ingredients by name, optionally within one list."""
+        try:
+            conn = self.get_connection()
+            cur = conn.cursor()
+            pattern = f"%{search_term}%"
             if list_name:
-                cursor.execute('''
-                    SELECT * FROM ingredients 
+                cur.execute(
+                    """
+                    SELECT * FROM ingredients
                     WHERE list_name = ? AND item_name LIKE ?
                     ORDER BY list_name, item_name
-                ''', (list_name, search_pattern))
+                    """,
+                    (list_name, pattern),
+                )
             else:
-                cursor.execute('''
-                    SELECT * FROM ingredients 
+                cur.execute(
+                    """
+                    SELECT * FROM ingredients
                     WHERE item_name LIKE ?
                     ORDER BY list_name, item_name
-                ''', (search_pattern,))
-            
-            results = [dict(row) for row in cursor.fetchall()]
+                    """,
+                    (pattern,),
+                )
+            rows = [dict(r) for r in cur.fetchall()]
             conn.close()
-            return results
+            return rows
         except Exception as e:
             print(f"Error searching ingredients: {e}")
             return []
-    
-    # ============== INVITEE OPERATIONS ==============
-    
+
+    # ---------------------------------------------------------------------
+    # INVITEE OPERATIONS
+    # ---------------------------------------------------------------------
     def load_invitee_list(self, list_name: str, df: pd.DataFrame) -> bool:
-        """Load invitee list from CSV to database"""
+        """
+        Load invitee list from CSV into database, replacing that list.
+        Skips header/separator/summary rows like '117 Total', and blank names.
+        """
         try:
             retry_count = 0
             while retry_count < 3:
                 try:
                     conn = self.get_connection()
                     cursor = conn.cursor()
-                    
-                    # Clear existing list
-                    cursor.execute('DELETE FROM invitees WHERE list_name = ?', (list_name,))
-                    
-                    # Insert new data
+
+                    cursor.execute(
+                        "DELETE FROM invitees WHERE list_name = ?",
+                        (list_name,),
+                    )
+
                     for _, row in df.iterrows():
                         try:
+                            name_raw = row.get("Name", None)
+                            lunch_raw = row.get("Lunch", None)
+
+                            if pd.isna(name_raw) or pd.isna(lunch_raw):
+                                continue
+
+                            name = str(name_raw).strip()
+                            if (
+                                not name
+                                or name.lower().startswith("index")
+                                or name.lower().endswith("total")
+                            ):
+                                # skip header / summary line like '117 Total'
+                                continue
+
+                            lunch = int(lunch_raw)
+
                             to_sakti = None
                             travel_by = None
-                            
-                            if 'To SAKTI' in row.index:
-                                val = row['To SAKTI']
+                            if "To SAKTI" in row.index:
+                                val = row["To SAKTI"]
                                 to_sakti = int(val) if pd.notna(val) else None
-                            if 'Travel By' in row.index:
-                                val = row['Travel By']
-                                travel_by = str(val) if pd.notna(val) else None
-                            
-                            cursor.execute('''
-                                INSERT INTO invitees 
-                                (list_name, name, lunch, to_sakti, travel_by)
-                                VALUES (?, ?, ?, ?, ?)
-                            ''', (list_name, str(row['Name']), int(row['Lunch']), to_sakti, travel_by))
-                        except (KeyError, ValueError, sqlite3.IntegrityError) as e:
+                            if "Travel By" in row.index:
+                                val = row["Travel By"]
+                                travel_by = str(val).strip() if pd.notna(val) else None
+
+                            cursor.execute(
+                                """
+                                INSERT INTO invitees
+                                (list_name, name, lunch,
+                                 to_sakti, travel_by,
+                                 original_lunch, original_to_sakti, original_travel_by)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                """,
+                                (
+                                    list_name,
+                                    name,
+                                    lunch,
+                                    to_sakti,
+                                    travel_by,
+                                    lunch,
+                                    to_sakti,
+                                    travel_by,
+                                ),
+                            )
+                        except (ValueError, sqlite3.IntegrityError, KeyError):
                             continue
-                    
+
                     conn.commit()
                     conn.close()
                     return True
@@ -297,37 +420,58 @@ class WeddingDatabase:
         except Exception as e:
             print(f"Error loading invitee list: {e}")
             return False
-    
+
     def get_invitees(self, list_name: str) -> List[Dict]:
-        """Get all invitees from a list"""
+        """Get all invitees for a list."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT * FROM invitees WHERE list_name = ? ORDER BY name
-            ''', (list_name,))
-            
-            invitees = [dict(row) for row in cursor.fetchall()]
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT * FROM invitees
+                WHERE list_name = ?
+                ORDER BY name
+                """,
+                (list_name,),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
             conn.close()
-            return invitees
+            return rows
         except Exception as e:
             print(f"Error getting invitees: {e}")
             return []
-    
-    def add_invitee(self, list_name: str, name: str, lunch: int,
-                   to_sakti: Optional[int] = None, travel_by: Optional[str] = None) -> bool:
-        """Add new invitee to list"""
+
+    def add_invitee(
+        self,
+        list_name: str,
+        name: str,
+        lunch: int,
+        to_sakti: Optional[int] = None,
+        travel_by: Optional[str] = None,
+    ) -> bool:
+        """Add new invitee with original_* set to first values."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                INSERT INTO invitees 
-                (list_name, name, lunch, to_sakti, travel_by)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (list_name, name, lunch, to_sakti, travel_by))
-            
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO invitees
+                (list_name, name, lunch,
+                 to_sakti, travel_by,
+                 original_lunch, original_to_sakti, original_travel_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    list_name,
+                    name,
+                    lunch,
+                    to_sakti,
+                    travel_by,
+                    lunch,
+                    to_sakti,
+                    travel_by,
+                ),
+            )
             conn.commit()
             conn.close()
             return True
@@ -336,124 +480,174 @@ class WeddingDatabase:
         except Exception as e:
             print(f"Error adding invitee: {e}")
             return False
-    
-    def update_invitee(self, list_name: str, name: str, 
-                      lunch: int, to_sakti: Optional[int] = None,
-                      travel_by: Optional[str] = None):
-        """Update invitee details"""
+
+    def update_invitee(
+        self,
+        list_name: str,
+        name: str,
+        lunch: int,
+        to_sakti: Optional[int] = None,
+        travel_by: Optional[str] = None,
+    ) -> None:
+        """Update invitee info; original_* stay unchanged."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            if to_sakti is not None and travel_by is not None:
-                cursor.execute('''
-                    UPDATE invitees 
+            cur = conn.cursor()
+            if to_sakti is not None or travel_by is not None:
+                cur.execute(
+                    """
+                    UPDATE invitees
                     SET lunch = ?, to_sakti = ?, travel_by = ?
                     WHERE list_name = ? AND name = ?
-                ''', (lunch, to_sakti, travel_by, list_name, name))
+                    """,
+                    (lunch, to_sakti, travel_by, list_name, name),
+                )
             else:
-                cursor.execute('''
-                    UPDATE invitees 
+                cur.execute(
+                    """
+                    UPDATE invitees
                     SET lunch = ?
                     WHERE list_name = ? AND name = ?
-                ''', (lunch, list_name, name))
-            
+                    """,
+                    (lunch, list_name, name),
+                )
             conn.commit()
             conn.close()
         except Exception as e:
             print(f"Error updating invitee: {e}")
-    
+
     def delete_invitee(self, list_name: str, name: str) -> bool:
-        """Delete invitee from list"""
+        """Delete invitee."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                DELETE FROM invitees 
+            cur = conn.cursor()
+            cur.execute(
+                """
+                DELETE FROM invitees
                 WHERE list_name = ? AND name = ?
-            ''', (list_name, name))
-            
+                """,
+                (list_name, name),
+            )
             conn.commit()
             conn.close()
             return True
         except Exception as e:
             print(f"Error deleting invitee: {e}")
             return False
-    
-    def get_total_headcount(self, list_name: str) -> int:
-        """Get total headcount for a list"""
+
+    def reset_invitee(self, list_name: str, name: str) -> None:
+        """
+        Reset invitee:
+        - lunch -> original_lunch
+        - to_sakti -> original_to_sakti (or 0 if NULL)
+        - travel_by -> original_travel_by
+        """
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT SUM(lunch) as total FROM invitees WHERE list_name = ?
-            ''', (list_name,))
-            
-            result = cursor.fetchone()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE invitees
+                SET lunch = original_lunch,
+                    to_sakti = COALESCE(original_to_sakti, 0),
+                    travel_by = original_travel_by
+                WHERE list_name = ? AND name = ?
+                """,
+                (list_name, name),
+            )
+            conn.commit()
             conn.close()
-            
-            return result['total'] if result['total'] else 0
+        except Exception as e:
+            print(f"Error resetting invitee: {e}")
+
+    def get_total_headcount(self, list_name: str) -> int:
+        """Sum lunch for a list."""
+        try:
+            conn = self.get_connection()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT SUM(lunch) AS total
+                FROM invitees
+                WHERE list_name = ?
+                """,
+                (list_name,),
+            )
+            row = cur.fetchone()
+            conn.close()
+            return int(row["total"]) if row and row["total"] is not None else 0
         except Exception as e:
             print(f"Error getting headcount: {e}")
             return 0
-    
-    def search_invitees(self, search_term: str, list_name: Optional[str] = None) -> List[Dict]:
-        """Search for invitees across lists"""
+
+    def search_invitees(
+        self,
+        search_term: str,
+        list_name: Optional[str] = None,
+    ) -> List[Dict]:
+        """Search invitees by name."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            search_pattern = f"%{search_term}%"
-            
+            cur = conn.cursor()
+            pattern = f"%{search_term}%"
             if list_name:
-                cursor.execute('''
-                    SELECT * FROM invitees 
+                cur.execute(
+                    """
+                    SELECT * FROM invitees
                     WHERE list_name = ? AND name LIKE ?
                     ORDER BY list_name, name
-                ''', (list_name, search_pattern))
+                    """,
+                    (list_name, pattern),
+                )
             else:
-                cursor.execute('''
-                    SELECT * FROM invitees 
+                cur.execute(
+                    """
+                    SELECT * FROM invitees
                     WHERE name LIKE ?
                     ORDER BY list_name, name
-                ''', (search_pattern,))
-            
-            results = [dict(row) for row in cursor.fetchall()]
+                    """,
+                    (pattern,),
+                )
+            rows = [dict(r) for r in cur.fetchall()]
             conn.close()
-            return results
+            return rows
         except Exception as e:
             print(f"Error searching invitees: {e}")
             return []
-    
-    # ============== MENU OPERATIONS ==============
-    
+
+    # ---------------------------------------------------------------------
+    # MENU OPERATIONS
+    # ---------------------------------------------------------------------
     def load_menu_data(self, df: pd.DataFrame) -> bool:
-        """Load menu data from CSV"""
+        """Load menus from CSV, replacing all."""
         try:
             retry_count = 0
             while retry_count < 3:
                 try:
                     conn = self.get_connection()
-                    cursor = conn.cursor()
-                    
-                    # Clear existing menus
-                    cursor.execute('DELETE FROM menus')
-                    
-                    # Insert new data
+                    cur = conn.cursor()
+
+                    cur.execute("DELETE FROM menus")
+
                     for _, row in df.iterrows():
                         try:
-                            if pd.notna(row['Date']) and pd.notna(row['Meal']):
-                                cursor.execute('''
-                                    INSERT INTO menus 
-                                    (date, meal, headcount, menu_items)
-                                    VALUES (?, ?, ?, ?)
-                                ''', (str(row['Date']), str(row['Meal']), 
-                                      int(row['Headcount']), str(row['Menu Items'])))
-                        except (KeyError, ValueError, sqlite3.IntegrityError) as e:
+                            if pd.isna(row.get("Date")) or pd.isna(row.get("Meal")):
+                                continue
+                            date = str(row["Date"]).strip()
+                            meal = str(row["Meal"]).strip()
+                            headcount = int(row["Headcount"])
+                            items = str(row["Menu Items"])
+                            cur.execute(
+                                """
+                                INSERT INTO menus
+                                (date, meal, headcount, menu_items)
+                                VALUES (?, ?, ?, ?)
+                                """,
+                                (date, meal, headcount, items),
+                            )
+                        except (ValueError, KeyError, sqlite3.IntegrityError):
                             continue
-                    
+
                     conn.commit()
                     conn.close()
                     return True
@@ -464,50 +658,54 @@ class WeddingDatabase:
         except Exception as e:
             print(f"Error loading menu data: {e}")
             return False
-    
+
     def get_menu(self, date: str, meal: str) -> Optional[Dict]:
-        """Get menu for specific date and meal"""
+        """Get menu row for a date+meal."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT * FROM menus WHERE date = ? AND meal = ?
-            ''', (date, meal))
-            
-            result = cursor.fetchone()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT * FROM menus
+                WHERE date = ? AND meal = ?
+                """,
+                (date, meal),
+            )
+            row = cur.fetchone()
             conn.close()
-            
-            return dict(result) if result else None
+            return dict(row) if row else None
         except Exception as e:
             print(f"Error getting menu: {e}")
             return None
-    
+
     def get_all_dates(self) -> List[str]:
-        """Get all unique dates from menus"""
+        """Return all distinct menu dates."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('SELECT DISTINCT date FROM menus ORDER BY date')
-            dates = [row[0] for row in cursor.fetchall()]
+            cur = conn.cursor()
+            cur.execute("SELECT DISTINCT date FROM menus ORDER BY date")
+            dates = [r[0] for r in cur.fetchall()]
             conn.close()
-            
             return dates
         except Exception as e:
             print(f"Error getting dates: {e}")
             return []
-    
+
     def get_meals_for_date(self, date: str) -> List[str]:
-        """Get all meals for a specific date"""
+        """Return meal types available on a date."""
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            
-            cursor.execute('SELECT DISTINCT meal FROM menus WHERE date = ? ORDER BY meal', (date,))
-            meals = [row[0] for row in cursor.fetchall()]
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT DISTINCT meal FROM menus
+                WHERE date = ?
+                ORDER BY meal
+                """,
+                (date,),
+            )
+            meals = [r[0] for r in cur.fetchall()]
             conn.close()
-            
             return meals
         except Exception as e:
             print(f"Error getting meals: {e}")
